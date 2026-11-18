@@ -312,6 +312,11 @@ function buildStyleBlock(data) {
         align-items: start;
       }
 
+      /* Grid children may shrink below their content, so a wide table cannot widen the page. */
+      .layout > * {
+        min-width: 0;
+      }
+
       .stack {
         display: grid;
         gap: var(--space-4);
@@ -832,6 +837,7 @@ function buildStyleBlock(data) {
       }
 
       .rendered-view {
+        overflow-wrap: break-word;
         color: var(--ink);
         font-family: var(--font-body);
         font-size: var(--body-size);
@@ -887,6 +893,7 @@ function buildStyleBlock(data) {
 
       .rendered-view th,
       .rendered-view td {
+        overflow-wrap: anywhere;
         padding: var(--space-2) var(--space-2);
         border: 1px solid var(--surface-border);
         text-align: left;
@@ -907,6 +914,28 @@ function buildStyleBlock(data) {
         color: var(--ink);
         font-family: var(--font-mono);
         font-size: 0.92em;
+      }
+
+      /* Fenced code. Long lines wrap, so the block never needs a sideways scroll. */
+      .rendered-view pre {
+        margin: var(--space-2) 0 var(--space-4);
+        padding: var(--space-3);
+        border: 1px solid var(--surface-border);
+        border-radius: ${escapeCssValue(data.spacingSpec.microRadius)};
+        background: var(--surface-bg-muted);
+        color: var(--ink);
+        font-family: var(--font-mono);
+        font-size: var(--source-size);
+        line-height: var(--source-line);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .rendered-view pre code {
+        padding: 0;
+        border-radius: 0;
+        background: none;
+        font-size: inherit;
       }
 
       @media (max-width: 1120px) {
@@ -1234,6 +1263,23 @@ function renderMarkdownBlocks(text) {
       continue;
     }
 
+    const fence = trimmed.match(/^(`{3,}|~{3,})\s*([\w+-]*)/);
+    if (fence) {
+      flushParagraph();
+      const marker = fence[1];
+      const indent = line.match(/^\s*/)[0].length;
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !isClosingFence(lines[index], marker)) {
+        codeLines.push(lines[index].slice(Math.min(indent, lines[index].match(/^\s*/)[0].length)));
+        index += 1;
+      }
+      index += 1;
+      const langClass = fence[2] ? ` class="language-${escapeHtml(fence[2])}"` : "";
+      html.push(`<pre class="md-code"><code${langClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+      continue;
+    }
+
     if (trimmed.startsWith("### ")) {
       flushParagraph();
       html.push(renderHeading(3, trimmed.replace(/^###\s+/, "")));
@@ -1350,10 +1396,39 @@ function extractDocumentTitle(text) {
   return match ? cleanText(match[1]) : null;
 }
 
+function isClosingFence(line, marker) {
+  const trimmed = line.trim();
+  return trimmed.startsWith(marker) && /^(`{3,}|~{3,})$/.test(trimmed) && trimmed[0] === marker[0];
+}
+
+// Character ranges of fenced code blocks, so a "## " line inside one is not read as a heading.
+function fencedRanges(text) {
+  const ranges = [];
+  let offset = 0;
+  let open = null;
+  for (const line of text.split("\n")) {
+    const opener = line.trim().match(/^(`{3,}|~{3,})/);
+    if (!open && opener) {
+      open = { marker: opener[1], start: offset };
+    } else if (open && isClosingFence(line, open.marker)) {
+      ranges.push([open.start, offset + line.length]);
+      open = null;
+    }
+    offset += line.length + 1;
+  }
+  if (open) {
+    ranges.push([open.start, text.length]);
+  }
+  return ranges;
+}
+
 function parseHeadingSections(text, level) {
   const heading = "#".repeat(level);
   const regex = new RegExp(`^${heading}\\s+(.+)$`, "gm");
-  const matches = [...text.matchAll(regex)];
+  const fences = fencedRanges(text);
+  const matches = [...text.matchAll(regex)].filter(
+    (match) => !fences.some(([start, end]) => match.index >= start && match.index < end),
+  );
 
   return matches.map((match, index) => {
     const start = match.index + match[0].length;
